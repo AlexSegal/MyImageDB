@@ -9,20 +9,57 @@ import pprint
 from config import Config
 
 class ImageInfo(dict):
-    def __init__(self, filename, resampleSizes=((1,1), (2,2), (4,4)),
+    def __init__(self, filename, resolutions=((1,1), (2,2), (4,4)),
                  thumbSize=128, thumbFormat='png'):
         super(ImageInfo, self).__init__()
-        info = self.getGeneralInfo(filename)
+        info = self._readGeneralInfo(filename)
         for k, v in info.items():
             self.setdefault(k, v)
-        if resampleSizes:
-            imgDumpDict = self.getImageDump(filename, resampleSizes,
-                                            thumbSize, thumbFormat)
+        if resolutions:
+            imgDumpDict = self._readPixels(filename, resolutions,
+                                           thumbSize, thumbFormat)
             for k, v in imgDumpDict.items():
                 self.setdefault(k, v)
         
+    def listSampledResolutions(self):
+        """Return a list of 2-elem resolutions in tuples: (w,h), this image was
+        sampled at. Resulting list is sorted by w*h in ascending order.
+        """
+        result = self['pixel_dumps'].keys()
+        result.sort(cmp=lambda *arg: cmp(arg[0][0]*arg[0][1],
+                                         arg[1][0]*arg[1][1]))
+        return result
+    
+    def getPixels(self, resolution, minX=0, minY=0, maxX=999999, maxY=999999):
+        """Return a list of floats, corresponding to pixels in the
+        given sampled resolution (w,h). Floats are in the RGBRGBRGB order.
+        """
+        if resolution not in self['pixel_dumps']:
+            raise ValueError('resolution %dx%d was not sampled' % tuple(resolution))
+        
+        floats = self['pixel_dumps'][resolution]
+        w, h = resolution
+        minX = max(0, minX)
+        minY = max(0, minY)
+        maxX = min(w, maxX)
+        maxY = min(h, maxY)
+        result = []
+        
+        for y in range(minY, maxY, 1):
+            for x in range(minX, maxX, 1):
+                offset = (y * h + x) * 3
+                result.extend(floats[offset:offset+3])
+                
+        return result
+      
+    def getThumbnailSize(self):
+        return self['thumbnail_size']
+
+    def getThumbnailData(self):
+        return self['thumbnail']
+        
     @classmethod
-    def getGeneralInfo(cls, filename):
+    def _readGeneralInfo(cls, filename):
         """
         Create and return a dictionary with keys:
             path
@@ -36,8 +73,6 @@ class ImageInfo(dict):
             height
             frame_aspect
         """
-        assert(filename.startswith(Config.IMG_ROOT))
-        
         cmd = ['iinfo', '--hash', '-v', filename]
         pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = pipe.communicate()
@@ -100,14 +135,15 @@ class ImageInfo(dict):
         return result
     
     @classmethod
-    def getImageDump(cls, filename, resampleSizes=((1,1), (2,2), (4,4)),
-                     thumbSize=128, thumbFormat='png'):
+    def _readPixels(cls, filename, resolutions=((1,1), (2,2), (4,4)),
+                    thumbSize=128, thumbFormat='png'):
         """Return a dictionary with keys:
-        'pixel_dumps': list of len(resampleSizes) of float pixel values lists
+        'pixel_dumps': a dictionary, where resolutions tuples (x,y) are keys
+        and lists of float pixel values are values
         'thumbnail': binary string with the thumbnail image in the requested format
         'thumbnail_size': (width, height)
         """
-        info = cls.getGeneralInfo(filename)
+        info = cls._readGeneralInfo(filename)
         scale = float(thumbSize) / max(info['width'], info['height'])
         thumbW = int(info['width'] * scale + 0.5)
         thumbH = int(info['height'] * scale + 0.5)
@@ -118,20 +154,21 @@ class ImageInfo(dict):
                                '([0-9\.\-\+e]+)\s+([0-9\.\-\+e]+)\s+([0-9\.\-\+e]+)\s*$')
         floatRegex = re.compile(r'^\s*Pixel \(\d+,\s+\d+\)\s*:\s*' \
                                '([0-9\.\-\+e]+)\s*$')
-        tfiles = []
-        cmd = ['oiiotool', filename]
 
-        sizes = list(resampleSizes)
+        sizes = list(resolutions)
         # Append order indices to widths, heights list to restore the original
         # order later on. For now we have to sort the sized from the largest
         # to the smallest, since this is what oiiotool is expecting to execute
         # multiple resizes in one command:
         sizes = [[w, h, i] for i, (w, h) in enumerate(sizes)]
-        sizes.sort(cmp=lambda *arg: cmp(max(arg[1][0], arg[1][1]),
-                                        max(arg[0][0], arg[0][1])))
+        sizes.sort(cmp=lambda *arg: cmp(arg[1][0] * arg[1][1],
+                                        arg[0][0] * arg[0][1]))
         # thumbnail is expected to be the largest, so it should come first:
         sizes.insert(0, (thumbW, thumbH, -1))
         
+        tfiles = []
+        cmd = ['oiiotool', filename]
+
         for w, h, i in sizes:
             tfile = tempfile.mktemp(prefix='myImgDBResamp',
                                     suffix=os.path.splitext(filename)[-1])
@@ -145,11 +182,7 @@ class ImageInfo(dict):
         #print cmd
         subprocess.check_call(cmd)
         
-        result['pixel_dumps'] = []
-        
-        # Resize the result['pixel_dumps'] list for random access to its elements:
-        for i in range(len(resampleSizes)):
-            result['pixel_dumps'].append([])
+        result['pixel_dumps'] = {}
         
         for (w, h, i), tfile in zip(sizes, tfiles):
             if not os.path.exists(tfile):
@@ -175,7 +208,7 @@ class ImageInfo(dict):
                     found = floatRegex.findall(line)
                     rgb = [float(found[0])] * 3
                     pixels.extend(rgb)
-            result['pixel_dumps'][i] = pixels
+            result['pixel_dumps'][(w,h)] = pixels
                 
             os.unlink(tfile)
         
@@ -184,10 +217,11 @@ class ImageInfo(dict):
 if __name__ == '__main__':
     #fn = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2018/2018Apr15/JPEG/DSC_1074.jpg'
     #fn = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/RMC_25_years/FromKayumov/rmc20.jpg'
-    fn = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2018/2018Sep02(Grouse)/JPEG/P1034001.jpg'
-    tilesInX = 8
-    imgInfo = ImageInfo(fn, resampleSizes=((tilesInX,tilesInX),), thumbSize=tilesInX)
+    fn = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2010/2010Dec11/CIMG0575.JPG'
+    #tilesInX = 8
+    #imgInfo = ImageInfo(fn, resolutions=((tilesInX,tilesInX),), thumbSize=tilesInX)
+    imgInfo = ImageInfo(fn)
     imgInfo.pop('thumbnail')
     pprint.pprint(dict(imgInfo))
-    #dump = ImageInfo.getImageDump(fn, thumbSize=16)
+    #dump = ImageInfo._readPixels(fn, thumbSize=16)
     #pprint.pprint(dump)

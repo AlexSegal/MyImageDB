@@ -6,6 +6,8 @@ import os
 import copy
 import MySQLdb
 import pprint
+import math
+import datetime
 from config import Config
 
 class Connection(object):
@@ -317,6 +319,7 @@ class ImageFilesTable(DBTableBase):
         updates = []
         for k, v in thisTableData.items():
             updates.append('%s=%s' % (k, `v`))
+
         sql += ' ON DUPLICATE KEY UPDATE %s' % ','.join(updates)
         
         cursor = Connection.cursor()
@@ -325,15 +328,16 @@ class ImageFilesTable(DBTableBase):
         result = cls.findByImagePath(path)
         
         # Now also update the mipmaps and the thumbnail:
-        print 'pixel_dumps[0]:', data['pixel_dumps'][0]
-        MipLevel0Table.store(result.id, data['pixel_dumps'][0])
-        MipLevel1Table.store(result.id, data['pixel_dumps'][1])
-        MipLevel2Table.store(result.id, data['pixel_dumps'][2])
+        print 'pixel_dumps[(1,1)]:', data['pixel_dumps'][(1,1)]
+        MipLevel0Table.store(result.id, data['pixel_dumps'][(1,1)])
+        MipLevel1Table.store(result.id, data['pixel_dumps'][(2,2)])
+        MipLevel2Table.store(result.id, data['pixel_dumps'][(4,4)])
         
         # TODO: for some reason images stored in the BLOB column get truncated
         # at random sizes, usually around 60% of the actual size.
         # Looks like a MySQL bug to me...
-        #ThumbnailTable.store(result.id, thumbFormat, data['thumbnail'], data['thumbnail_size'])
+        #ThumbnailTable.store(result.id, thumbFormat,
+        #                     data.getThumbnail(), data.getThumbnailSize()])
         
         return result
 
@@ -352,39 +356,42 @@ class ImageFilesTable(DBTableBase):
                     cls.storeImagePath(os.path.join(root, name))
 
     @classmethod
-    def findByClosestColors(cls, rgbs, frameAspect, aspectTolerance=0.1, limit=16,
+    def findByClosestColors(cls, pixels, frameAspect, aspectTolerance=0.1, limit=16,
                             excludeImageIDs=None):
         """Locate rows in the database and return as a list of instances of
-        this class, that are the closest to the given rgb value(s). There can be either
-        1, 4, or 16 [r,g,b] values to compare against.
+        this class, that are the closest to the given pixel (rgb) value(s).
+        There can be either 1*3, 4*3, or 16*3 values to compare against.
         Returned list length is equal or shorter than limit, sorted "closest first"
         """
-        def isRGB(rgb):
-            return isinstance(rgb, (list, tuple)) and \
-                   len(rgb) == 3 and \
-                   all([isinstance(x, float) for x in rgb])
-        
-        if  isRGB(rgbs):
-            pixels = [rgbs]
-        elif (len(rgbs) == 1 and isRGB(rgbs[0])) or \
-             (len(rgbs) in (4, 16) and all([isRGB(x) for x in rgbs])):
-            pixels = rgbs
-        else:
-            raise ValueError('list/tuple of 1, 4, or 16 [float, float, float] ' \
-                             'expected, got %s' % `rgbs`)
-        
-        if len(pixels) == 1:
+        if len(pixels) == 1*3:
             return MipLevel0Table.findClosest(pixels, frameAspect, aspectTolerance,
                                               limit, excludeImageIDs)
-        elif len(pixels) == 4:
+        elif len(pixels) == 4*3:
             return MipLevel1Table.findClosest(pixels, frameAspect, aspectTolerance,
                                               limit, excludeImageIDs)
-        elif len(pixels) == 16:
+        elif len(pixels) == 16*3:
             return MipLevel2Table.findClosest(pixels, frameAspect, aspectTolerance,
                                               limit, excludeImageIDs)
 
-        raise ValueError('WTF?')
+        raise ValueError('pixels: %d values not expected' % len(pixels))
       
+    def maxDistance(self, pixels):
+        """Return max color space distance from the float pixels RGBRGBRGB...
+        to mip levels of this image.
+        There can be either 1*3, 4*3, or 16*3 values in pixels to compare against.
+        """
+        if len(pixels) == 1*3:
+            mipTable = MipLevel0Table.findByImageID(self.id)
+        elif len(pixels) == 4*3:
+            mipTable = MipLevel1Table.findByImageID(self.id)
+        elif len(pixels) == 16*3:
+            mipTable = MipLevel2Table.findByImageID(self.id)
+        else:
+            raise ValueError('pixels: %d values not expected' % len(pixels))
+
+        return mipTable.maxDistance(pixels) if mipTable else 1e+27
+            
+        
 class MipLevel0Table(DBTableBase):
     @classmethod
     def table(cls):
@@ -425,8 +432,7 @@ class MipLevel0Table(DBTableBase):
         """
         keys = cls.colorColumns()
         
-        if len(keys) != len(values):
-            raise ValueError('%d keys vs %d values!' % (len(keys), len(values)))
+        assert(len(keys) == len(values))
         
         sql = 'INSERT INTO %s (%s) VALUES (%s)' % \
               (cls.table(),
@@ -438,20 +444,21 @@ class MipLevel0Table(DBTableBase):
             updates.append('%s=%s' % (k, str(v)))
         sql += ' ON DUPLICATE KEY UPDATE %s' % ','.join(updates)
         
-        print sql
         cursor = Connection.cursor()
         cursor.execute(sql)
 
     @classmethod
-    def sortOrder(cls, rgbs):
-        return 'POW(mip_level0.red-%g, 2) + ' \
-               'POW(mip_level0.green-%g, 2) + ' \
-               'POW(mip_level0.blue-%g, 2)' % tuple(rgbs[0])
-    
+    def sortOrder(cls, values):
+        assert(len(values) == len(cls.colorColumns()))
+        s = []
+        for column, value in zip(cls.colorColumns(), values):
+            s.append('POW(%s.%s - %g, 2)' % (cls.table(), column, value))
+        return '+'.join(s)
+
     @classmethod
-    def findClosest(cls, rgbs, frameAspect, aspectTolerance=0.1, limit=16,
+    def findClosest(cls, pixels, frameAspect, aspectTolerance=0.1, limit=16,
                     excludeImageIDs=None):
-        """Find a few rows that are the closest to the given rgbs
+        """Find a few rows that are the closest to the given rgb pixels
         """
         if not excludeImageIDs:
             excludeImageIDs = [-1]
@@ -471,7 +478,7 @@ LIMIT %d''' % (table,
                frameAspect,
                aspectTolerance,
                ','.join([str(x) for x in excludeImageIDs]),
-               cls.sortOrder(rgbs),
+               cls.sortOrder(pixels),
                limit)
         
         cursor = Connection.cursor()
@@ -479,11 +486,25 @@ LIMIT %d''' % (table,
         imageIDs = [x['imageID'] for x in cursor.fetchall()]
         return [ImageFilesTable.findByID(x) for x in imageIDs]
 
-    '''
-    def distance(self, rgb, mode='average'):
-        """Find the color space distance (either 'average', 'max', or 'min')
-        between the rgb value and 
-    '''
+    def maxDistance(self, pixels):
+        """Find the max color space distance between the given pixel(s) and
+        the one(s) stored in the table
+        """
+        assert(len(pixels) == len(self.colorColumns()))
+        
+        data = self.attributes
+        result = 0
+        
+        for i in range(0, len(pixels), 3):
+            red = data[self.colorColumns()[i]]
+            green = data[self.colorColumns()[i+1]]
+            blue = data[self.colorColumns()[i+2]]
+            d = math.pow(red - pixels[i], 2) + \
+                math.pow(green - pixels[i+1], 2) + \
+                math.pow(blue - pixels[i+2], 2)
+            result = max(result, d)
+        
+        return math.sqrt(result)
     
 class MipLevel1Table(MipLevel0Table):
     @classmethod
@@ -498,15 +519,6 @@ class MipLevel1Table(MipLevel0Table):
         """
         return 'mip_level1ID'
 
-    @classmethod
-    def sortOrder(cls, rgbs):
-        assert(len(rgbs) == 4)
-        result = []
-        for i, rgb in enumerate(rgbs):
-            result.append('POW(mip_level1.red%d-%g, 2)' % (i, rgb[0]))
-            result.append('POW(mip_level1.green%d-%g, 2)' % (i, rgb[1]))
-            result.append('POW(mip_level1.green%d-%g, 2)' % (i, rgb[2]))
-        return '+'.join(result)
     
 class MipLevel2Table(MipLevel0Table):
     @classmethod
@@ -520,16 +532,6 @@ class MipLevel2Table(MipLevel0Table):
         """Return the 'id' column name in the database table.
         """
         return 'mip_level2ID'
-
-    @classmethod
-    def sortOrder(cls, rgbs):
-        assert(len(rgbs) == 16)
-        result = []
-        for i, rgb in enumerate(rgbs):
-            result.append('POW(%s.red%02d-%g, 2)' % (cls.table(), i, rgb[0]))
-            result.append('POW(%s.green%02d-%g, 2)' % (cls.table(), i, rgb[1]))
-            result.append('POW(%s.green%02d-%g, 2)' % (cls.table(), i, rgb[2]))
-        return '+'.join(result)
 
     
 class ThumbnailTable(DBTableBase):
@@ -575,8 +577,6 @@ class ThumbnailTable(DBTableBase):
             updates.append('%s=%s' % (k, '%s'))
         sql += ' ON DUPLICATE KEY UPDATE %s' % ','.join(updates)
 
-        print sql
-        
         cursor = Connection.cursor()
         cursor.execute(sql, tuple(data.values() + data2.values()))
         
