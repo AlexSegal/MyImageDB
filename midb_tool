@@ -1,0 +1,64 @@
+#!/bin/env python
+
+"""The MyImageDB utility. Use it to populate the image database and also to make
+mosaic images out of pictures in the database.
+"""
+
+import os
+import sys
+import optparse
+
+appDir = os.path.dirname(os.path.abspath(sys.argv[0]))
+sys.path.append(os.path.join(appDir, 'python'))
+import midb
+
+if __name__ == '__main__':
+    parser = optparse.OptionParser(usage='%%prog. %s' % __doc__)
+    parser.add_option('-s', '--store', dest='store',
+                      action='store_true', default=False,
+                      help='Switch to the "store" mode: recursively locate all '
+                           'images in the given/default directory and store '
+                           'their info in the database.')
+    parser.add_option('-r', '--root', dest='root_dir',
+                      action='store', default=None,
+                      help='Directory to start looking for the images in, for the '
+                           '--store mode.')
+    parser.add_option('-f', '--force-existing', dest='force_existing',
+                      action='store_true', default=False,
+                      help='Force re-processing and storing of images that are '
+                           'already in the database.')
+    parser.add_option('-m', '--make-mosaic', dest='make_mosaic',
+                      action='store_true', default=False,
+                      help='Swith to the "build mosaic" mode')
+    parser.add_option('-i', '--infile', dest='infile',
+                      action='store', default=None,
+                      help='Image file name to make the mosaic look like.')
+    parser.add_option('-o', '--outfile', dest='outfile',
+                      action='store', default=None,
+                      help='Image file name to save mosaic image in.')
+    parser.add_option('-t', '--tiles', dest='tiles',
+                      action='store', default=24, type='int',
+                      help='Number of tiles in X and Y in the output mosaic. '
+                           'Default: 24')
+    parser.add_option('-x', '--resolution', dest='resolution',
+                      action='store', default=1920, type='int',
+                      help='Pixel resolution of the output mosaic in X')
+    parser.add_option('-n', '--norepeat', dest='norepeat',
+                      action='store', default=200,
+                      help='Image in the mosaic tiles will not repeat for this '
+                           'many times while scanning the mosaic.')
+    
+    options, args = parser.parse_args()
+
+    if options.store:
+        midb.processImageDir(root=options.root_dir,
+                             forceUpdateExisting=options.force_existing)
+    elif options.make_mosaic:
+        midb.makeMosaicImage(options.infile,
+                             options.tiles,
+                             options.resolution,
+                             options.outfile,
+                             noRepeatCount=options.norepeat)
+    else:
+        raise RuntimeError('Either --store or --make-mosaic must be specified')
+        
