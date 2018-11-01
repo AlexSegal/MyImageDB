@@ -13,3 +13,5 @@ class Config(object):
     USERNAME = 'my_image_db'
     PASSWD = 'oj4VXLA4nDFAdt7k'
     IMG_ROOT = os.environ.get(IMG_ROOT_ENV, FALLBACK_IMG_ROOT)
+    LOGFILE = '/var/tmp/midb.log'
+    TIMESTAMP_FALLBACK = '2001-01-01 00:00:00.0'

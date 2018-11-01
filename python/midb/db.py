@@ -8,7 +8,11 @@ import MySQLdb
 import pprint
 import math
 import datetime
+import logging
+import traceback
 from config import Config
+
+log = logging.getLogger('midb.db')
 
 class Connection(object):
     """Database connection class, with a couple static methods.
@@ -96,8 +100,8 @@ class DBTableBase(object):
         badKeys = set([x for x in data.keys() if x not in self._schema()])
 
         if badKeys:
-            print('Argument(s): %s do not correspond to the schema of the '
-                  'database table %s' % (sorted(badKeys), self.table()))
+            log.warning('Argument(s): %s do not correspond to the schema of the '
+                        'database table %s' % (sorted(badKeys), self.table()))
 
         self.data = copy.deepcopy(data)
 
@@ -288,7 +292,7 @@ class ImageFilesTable(DBTableBase):
         return os.path.normpath(os.path.join(Config.IMG_ROOT, self.path))
     
     @classmethod
-    def storeImagePath(cls, path, resampleSizes=((1,1), (2,2), (4,4)),
+    def storeImagePath(cls, path, resolutions=((1,1), (2,2), (4,4)),
                        thumbSize=128, thumbFormat='png'):
         """Add a new row into the table given the absolute path to the image file.
         If the record for this path exists, update it (if necessary).
@@ -304,9 +308,9 @@ class ImageFilesTable(DBTableBase):
             data = ImageInfo(path,
                              thumbSize=thumbSize,
                              thumbFormat=thumbFormat,
-                             resampleSizes=resampleSizes)
+                             resolutions=resolutions)
         except Exception, e:
-            print path, e
+            log.exception(traceback.format_exc())
             return
 
         thisTableData = dict([(k, v) for k, v in data.items() if k in cls.columns()])
@@ -328,7 +332,7 @@ class ImageFilesTable(DBTableBase):
         result = cls.findByImagePath(path)
         
         # Now also update the mipmaps and the thumbnail:
-        print 'pixel_dumps[(1,1)]:', data['pixel_dumps'][(1,1)]
+        log.debug('pixel_dumps[(1,1)]: %s' % data['pixel_dumps'][(1,1)])
         MipLevel0Table.store(result.id, data['pixel_dumps'][(1,1)])
         MipLevel1Table.store(result.id, data['pixel_dumps'][(2,2)])
         MipLevel2Table.store(result.id, data['pixel_dumps'][(4,4)])
@@ -342,18 +346,25 @@ class ImageFilesTable(DBTableBase):
         return result
 
     @classmethod
-    def traverseAndStore(cls, root=Config.IMG_ROOT):
+    def traverseAndStore(cls, rootDir=None, forceUpdateExisting=False):
         """Walk down the file system tree, adding images to the database table
         """
         exts = set(['.' + x.lower() for x in cls.listEnumOptions('format')])
         
-        for root, dirs, files in os.walk(root, topdown=False):
-            print 'Traversing %s...' % root
+        if rootDir is None:
+            rootDir = Config.IMG_ROOT
+            
+        for root, dirs, files in os.walk(rootDir, topdown=False):
+            log.info('Traversing %s...' % root)
             for name in files:
                 nm, ext = os.path.splitext(name)
                 if ext.lower() in exts:
-                    print name
-                    cls.storeImagePath(os.path.join(root, name))
+                    fullpath = os.path.join(root, name)
+                    if forceUpdateExisting or not cls.findByImagePath(fullpath):
+                        log.info('Storing: %s' % name)
+                        cls.storeImagePath(fullpath)
+                    else:
+                        log.info('%s skipped: already in the database' % name)
 
     @classmethod
     def findByClosestColors(cls, pixels, frameAspect, aspectTolerance=0.1, limit=16,
@@ -375,8 +386,8 @@ class ImageFilesTable(DBTableBase):
 
         raise ValueError('pixels: %d values not expected' % len(pixels))
       
-    def maxDistance(self, pixels):
-        """Return max color space distance from the float pixels RGBRGBRGB...
+    def distance(self, pixels):
+        """Return color space distance from the float pixels RGBRGBRGB...
         to mip levels of this image.
         There can be either 1*3, 4*3, or 16*3 values in pixels to compare against.
         """
@@ -389,7 +400,7 @@ class ImageFilesTable(DBTableBase):
         else:
             raise ValueError('pixels: %d values not expected' % len(pixels))
 
-        return mipTable.maxDistance(pixels) if mipTable else 1e+27
+        return mipTable.distance(pixels) if mipTable else 1e+27
             
         
 class MipLevel0Table(DBTableBase):
@@ -486,7 +497,7 @@ LIMIT %d''' % (table,
         imageIDs = [x['imageID'] for x in cursor.fetchall()]
         return [ImageFilesTable.findByID(x) for x in imageIDs]
 
-    def maxDistance(self, pixels):
+    def distance(self, pixels):
         """Find the max color space distance between the given pixel(s) and
         the one(s) stored in the table
         """
@@ -495,16 +506,18 @@ LIMIT %d''' % (table,
         data = self.attributes
         result = 0
         
+        resultVec = [0, 0, 0]
+        
         for i in range(0, len(pixels), 3):
             red = data[self.colorColumns()[i]]
             green = data[self.colorColumns()[i+1]]
             blue = data[self.colorColumns()[i+2]]
-            d = math.pow(red - pixels[i], 2) + \
-                math.pow(green - pixels[i+1], 2) + \
-                math.pow(blue - pixels[i+2], 2)
-            result = max(result, d)
+            resultVec[0] += red - pixels[i]
+            resultVec[1] += green - pixels[i+1]
+            resultVec[2] += blue - pixels[i+2]
         
-        return math.sqrt(result)
+        return math.sqrt(resultVec[0]**2 + resultVec[1]**2 + resultVec[2]**2) / \
+               (len(pixels) / 3)
     
 class MipLevel1Table(MipLevel0Table):
     @classmethod
@@ -579,20 +592,3 @@ class ThumbnailTable(DBTableBase):
 
         cursor = Connection.cursor()
         cursor.execute(sql, tuple(data.values() + data2.values()))
-        
-
-if __name__ == '__main__':
-    pass
-    #fname = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2018/2018Apr15/JPEG/DSC_1074.jpg'
-    #fname = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2018/2018Apr15/JPEG/DSC_1104.jpg'
-    fname = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2010/2010Dec11/CIMG0575.JPG'
-    print ImageFilesTable.storeImagePath(fname)
-    #ImageFilesTable.traverseAndStore("/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/SchoolPhotos")
-    #ImageFilesTable.traverseAndStore() # the total thing!
-    #pprint.pprint(MipLevel0Table.findClosest([[0.145098, 0.266667, 0.356863]], 1.5))
-    #pprint.pprint(MipLevel1Table.findClosest([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]], 1.5))
-    #pprint.pprint(MipLevel2Table.findClosest([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5],
-    #                                          [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5],
-    #                                          [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5],
-    #                                          [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]],
-    #                                          1.5))

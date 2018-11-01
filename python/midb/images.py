@@ -6,7 +6,10 @@ import subprocess
 import datetime
 import tempfile
 import pprint
+import logging
 from config import Config
+
+log = logging.getLogger('midb.images')
 
 class ImageInfo(dict):
     def __init__(self, filename, resolutions=((1,1), (2,2), (4,4)),
@@ -90,7 +93,7 @@ class ImageInfo(dict):
         #result['orig_timestamp'] = str(datetime.datetime.fromtimestamp(ctime))
         
         # Actually I prefer setting it to some old time...
-        result['orig_timestamp'] = '2001-01-01 00:00:00.0'
+        result['orig_timestamp'] = Config.TIMESTAMP_FALLBACK
 
         for line in stdout.splitlines():
             if ':' not in line:
@@ -124,8 +127,15 @@ class ImageInfo(dict):
             elif parts[0] == 'oiio:ColorSpace':
                 result['colorspace'] = parts[1][1:-1]
             elif parts[0] == 'Exif:DateTimeOriginal':
-                dt = datetime.datetime.strptime(parts[1][1:-1], '%Y:%m:%d %H:%M:%S')
-                result['orig_timestamp'] = str(dt)
+                try:
+                    dt = datetime.datetime.strptime(parts[1][1:-1],
+                                                    '%Y:%m:%d %H:%M:%S')
+                except:
+                    log.warn('Bad Exif:DateTimeOriginal value: %s, skipped' % \
+                             parts[1][1:-1])
+                    pass
+                else:
+                    result['orig_timestamp'] = str(dt)
             
         if result['format'] == 'jpeg':
             result['format'] = 'jpg'
@@ -179,7 +189,6 @@ class ImageInfo(dict):
             cmd.extend(['--resize', '%dx%d' % (w,h), '-o', tfile])
             tfiles.append(tfile)
             
-        #print cmd
         subprocess.check_call(cmd)
         
         result['pixel_dumps'] = {}
@@ -214,14 +223,3 @@ class ImageInfo(dict):
         
         return result
     
-if __name__ == '__main__':
-    #fn = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2018/2018Apr15/JPEG/DSC_1074.jpg'
-    #fn = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/RMC_25_years/FromKayumov/rmc20.jpg'
-    fn = '/run/media/alex/Seagate Expansion Drive/backup.rsync.win/Pictures/2010/2010Dec11/CIMG0575.JPG'
-    #tilesInX = 8
-    #imgInfo = ImageInfo(fn, resolutions=((tilesInX,tilesInX),), thumbSize=tilesInX)
-    imgInfo = ImageInfo(fn)
-    imgInfo.pop('thumbnail')
-    pprint.pprint(dict(imgInfo))
-    #dump = ImageInfo._readPixels(fn, thumbSize=16)
-    #pprint.pprint(dump)
