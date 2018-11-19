@@ -44,7 +44,7 @@ if __name__ == '__main__':
                       action='store', default=1920, type='int',
                       help='Pixel resolution of the output mosaic in X')
     parser.add_option('-n', '--norepeat', dest='norepeat',
-                      action='store', default=200,
+                      action='store', default=200, type='int',
                       help='Image in the mosaic tiles will not repeat for this '
                            'many times while scanning the mosaic.')
     
