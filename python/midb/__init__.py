@@ -19,7 +19,7 @@ h = logging.StreamHandler(stream=sys.stderr)
 h.setFormatter(logging.Formatter('%(name)s [%(levelname)s]: %(message)s'))
 log.addHandler(h)
 
-h = handlers.RotatingFileHandler(Config.LOGFILE, maxBytes=10*1024,
+h = handlers.RotatingFileHandler(Config.LOGFILE, maxBytes=10*1024*1024,
                                 backupCount=10)
 h.setFormatter(logging.Formatter('%(asctime)s %(name)s [%(levelname)s]: %(message)s'))
 log.addHandler(h)
